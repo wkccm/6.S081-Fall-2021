@@ -287,9 +287,11 @@ uint64
 sys_open(void)
 {
   char path[MAXPATH];
+  char sympath[MAXPATH];
   int fd, omode;
   struct file *f;
   struct inode *ip;
+  struct inode *symip=0;
   int n;
 
   if((n = argstr(0, path, MAXPATH)) < 0 || argint(1, &omode) < 0)
@@ -313,6 +315,29 @@ sys_open(void)
       iunlockput(ip);
       end_op();
       return -1;
+    }
+  }
+
+  if(!(omode&O_NOFOLLOW)&& ip->type==T_SYMLINK){
+    int i=0;
+    while(ip->type==T_SYMLINK){
+      if(readi(ip,0,(uint64)&sympath,0,MAXPATH)==-1){
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);
+      if((symip=namei(sympath))==0){
+        end_op();
+        return -1;
+      }
+      i++;
+      if(i==10){
+        end_op();
+        return -1;
+      }
+      ip=symip;
+      ilock(ip);
     }
   }
 
@@ -482,5 +507,55 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+uint64 sys_symlink(void){
+  char name[DIRSIZ],target[MAXPATH],path[MAXPATH];
+  struct inode *dp,*ip,*sym;
+  if(argstr(0,target,MAXPATH)<0||argstr(1,path,MAXPATH)<0){
+    return -1;
+  }
+  begin_op();
+  if((ip=namei(target))!=0){
+    ilock(ip);
+    if(ip->type==T_DIR){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
+    iunlockput(ip);
+  }
+
+  if((dp=nameiparent(path,name))==0){
+    end_op();
+    return -1;
+  }
+
+  ilock(dp);
+  if((sym=dirlookup(dp,name,0))!=0){
+    iunlockput(dp);
+    end_op();
+    return -1;
+  }
+
+  if((sym=ialloc(dp->dev,T_SYMLINK))==0){
+    panic("create:ialloc");
+  }
+  ilock(sym);
+  sym->nlink=1;
+  iupdate(sym);
+
+  if(dirlink(dp,name,sym->inum)<0){
+    panic("create: dirlink");
+  }
+  iupdate(dp);
+  if(writei(sym,0,(uint64)&target,0,strlen(target))!=strlen(target)){
+    panic("symlink: writei");
+  }
+  iupdate(sym);
+  iunlockput(dp);
+  iunlockput(sym);
+  end_op();
   return 0;
 }
