@@ -5,6 +5,7 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "defs.h"
+#include "fcntl.h"
 
 struct spinlock tickslock;
 uint ticks;
@@ -67,7 +68,39 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-  } else {
+  } else if(r_scause()==13||r_scause()==15){
+    uint64 stval=r_stval();
+
+    int idx=findmap(stval);
+
+    if(idx>=0){
+      int PTEword=PTE_U;
+      int prot=(p->map_region[idx]).mmprot;
+      uint64 length=(p->map_region[idx]).mmlength;
+      
+      if(prot&PROT_READ)
+        PTEword|=PTE_R;
+      if(prot&PROT_WRITE)
+        PTEword|=PTE_W;
+      if(prot&PROT_EXEC)
+        PTEword|=PTE_X;
+      
+      uint64 sz=(p->map_region[idx]).mmapaddr;
+      uint64 newsz=(p->map_region[idx]).mmapend;
+      if((newsz=mmapalloc(p->pagetable, sz, newsz, PTEword))==0){
+        printf(("allocate error"));
+      }
+
+      struct inode* ip=p->map_region[idx].ip;
+      ilock(ip);
+      readi(ip,1,(p->map_region[idx]).mmapaddr,0,length);
+      iunlock(ip);
+    }
+    else{
+      p->killed=1;
+    }
+  }
+  else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
     p->killed = 1;

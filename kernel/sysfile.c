@@ -484,3 +484,71 @@ sys_pipe(void)
   }
   return 0;
 }
+
+static int mapalloc(){
+  int i;
+  struct proc *p=myproc();
+  for(i=0;i<NOFILE;i++){
+    if(p->map_region[i].valid==0){
+      p->map_region[i].valid=1;
+      return i;
+    }
+  }
+  return -1;
+}
+
+uint64 sys_mmap(void){
+  struct proc *p=myproc();
+
+  uint64 fail=(uint64)((char*)-1);
+  uint64 addr;
+  uint64 length=p->trapframe->a1;
+  int prot=p->trapframe->a2;
+  int flags=p->trapframe->a3;
+  int fd=p->trapframe->a4;
+
+  if((p->ofile[fd]->writable)==0&&(flags&MAP_SHARED)&&(prot&PROT_WRITE)){
+    return fail;
+  }
+
+  int idx=mapalloc();
+
+  p->map_region[idx].mmlength=length;
+  p->map_region[idx].mmprot=prot;
+  p->map_region[idx].mmflag=flags;
+  p->map_region[idx].mmapfile=p->ofile[fd];
+  p->map_region[idx].ip=p->ofile[fd]->ip;
+
+  filedup(p->ofile[fd]);
+
+  addr=PGROUNDUP(p->sz);
+  p->sz+=PGROUNDUP(length);
+  p->map_region[idx].mmapaddr=addr;
+  p->map_region[idx].mmapend=addr+PGROUNDUP(length);
+  return addr;
+}
+
+uint64 sys_munmap(void){
+  struct proc *p=myproc();
+  uint64 addr=p->trapframe->a0;
+  uint64 length=p->trapframe->a1;
+
+  int idx=findmap(addr);
+  if(idx<0){
+    return -1;
+  }
+  int npages=PGROUNDUP(length)/PGSIZE;
+
+  if(p->map_region[idx].mmflag & MAP_SHARED){
+    filewrite(p->map_region[idx].mmapfile,addr,length);
+  }
+
+  uvmunmap(p->pagetable,addr,npages,1);
+
+  p->map_region[idx].mmlength-=length;
+  if(p->map_region[idx].mmlength==0){
+    fileclose(p->map_region[idx].mmapfile);
+    memset((void*)&p->map_region[idx],0,sizeof(vma));
+  }
+  return 0;
+}

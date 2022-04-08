@@ -276,6 +276,8 @@ fork(void)
   struct proc *np;
   struct proc *p = myproc();
 
+
+
   // Allocate process.
   if((np = allocproc()) == 0){
     return -1;
@@ -300,6 +302,13 @@ fork(void)
     if(p->ofile[i])
       np->ofile[i] = filedup(p->ofile[i]);
   np->cwd = idup(p->cwd);
+
+  memmove(&np->map_region,&p->map_region,sizeof(vma)*16);
+  for(int idx=0;idx<16;idx++){
+    if(p->map_region[idx].valid!=0){
+      filedup(p->map_region[idx].mmapfile);
+    }
+  }
 
   safestrcpy(np->name, p->name, sizeof(p->name));
 
@@ -350,6 +359,16 @@ exit(int status)
       struct file *f = p->ofile[fd];
       fileclose(f);
       p->ofile[fd] = 0;
+    }
+  }
+
+  for(int idx=0;idx<16;idx++){
+    if(p->map_region[idx].valid!=0){
+      uint64 len=p->map_region[idx].mmlength;
+      uint64 offset=p->map_region[idx].mmapend-len;
+      fileclose(p->map_region[idx].mmapfile);
+      uvmunmap(p->pagetable,offset,PGROUNDUP(len)/PGSIZE,1);
+      memset((void*)&p->map_region[idx],0,sizeof(vma));
     }
   }
 
@@ -653,4 +672,43 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+
+
+int findmap(uint64 addr){
+  struct proc *p=myproc();
+  int i;
+  for(i=0;i<16;i++){
+    uint64 a=p->map_region[i].mmapaddr;
+    uint64 b=p->map_region[i].mmapend;
+    if(addr>=a && addr<b){
+      return i;
+    }
+  }
+  return -1;
+}
+
+uint64 mmapalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int prot){
+  char* mem;
+  uint64 a;
+  if(newsz<oldsz){
+    return oldsz;
+  }
+
+  for(a=oldsz;a<newsz;a+=PGSIZE){
+    mem=kalloc();
+    if(mem==0){
+      uvmdealloc(pagetable,a,oldsz);
+      return 0;
+    }
+    memset(mem,0,PGSIZE);
+
+    if(mappages(pagetable,a,PGSIZE,(uint64)mem,prot)!=0){
+      kfree(mem);
+      uvmdealloc(pagetable,a,oldsz);
+      return 0;
+    }
+  }
+  return newsz;
 }
